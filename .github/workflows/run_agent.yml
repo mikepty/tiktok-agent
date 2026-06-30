@@ -1,0 +1,57 @@
+name: Agente TikTok — Generar contenido diario
+
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 8:00 AM hora Panamá (UTC-5)
+  workflow_dispatch:
+    inputs:
+      limite:
+        description: "Procesar solo N productos (vacío = todos)"
+        required: false
+        default: ""
+      categorias:
+        description: "Cuántas categorías investigar (default: 2)"
+        required: false
+        default: "2"
+
+jobs:
+  producir-videos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Clonar repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ffmpeg (ya viene en ubuntu-latest)
+        run: ffmpeg -version | head -1
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Correr el agente
+        env:
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          LIMITE="${{ github.event.inputs.limite }}"
+          CATS="${{ github.event.inputs.categorias || '2' }}"
+          if [ -n "$LIMITE" ]; then
+            python3 main.py --limite $LIMITE --categorias $CATS
+          else
+            python3 main.py --categorias $CATS
+          fi
+
+      - name: Guardar videos como artefactos (por si el envío a Telegram falla)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: videos-del-dia-${{ github.run_id }}
+          path: output/video_*.mp4
+          retention-days: 7
