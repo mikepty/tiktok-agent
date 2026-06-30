@@ -96,6 +96,14 @@ Amazon.com o Amazon.com.mx:
 - El problema cotidiano que resuelve (algo con lo que el usuario se
   identifique, no tecnicismos)
 - Por qué es el mejor valor del mercado ahora mismo
+- 4 CARACTERÍSTICAS TÉCNICAS ESPECÍFICAS Y REALES de este producto exacto
+  (no genéricas). Ejemplos del nivel de detalle esperado: "Batería de
+  2600mAh dura hasta 6 meses con una carga", "Resolución 2K con visión
+  nocturna de 10 metros", "Compatible con Alexa, Google Home y Apple
+  HomeKit", "Mide el consumo en tiempo real con precisión de 0.1 kWh".
+  Estas características son las que se van a narrar una por una en el
+  video, así que deben ser reales, verificables y específicas de ESTE
+  producto, sacadas de su ficha técnica en Amazon.
 
 IMPORTANTE: Elige productos que:
 1. Existan REALMENTE en Amazon (no inventes ASINs)
@@ -115,7 +123,13 @@ Responde SOLO con un array JSON válido, sin texto adicional:
     "url_imagen": "URL directa de la imagen del producto",
     "beneficio_clave": "en una frase corta y atractiva",
     "problema_que_resuelve": "problema cotidiano que soluciona",
-    "por_que_es_buena_compra": "razón breve de por qué es el mejor valor ahora"
+    "por_que_es_buena_compra": "razón breve de por qué es el mejor valor ahora",
+    "caracteristicas": [
+      "característica técnica real y específica 1",
+      "característica técnica real y específica 2",
+      "característica técnica real y específica 3",
+      "característica técnica real y específica 4"
+    ]
   }}
 ]
 """

@@ -168,6 +168,108 @@ def _generar_tarjeta(nombre: str, precio: str, categoria: str,
     return ruta_destino
 
 
+def generar_tarjeta_escena(texto_pantalla: str, tipo_escena: str, nombre_producto: str,
+                            categoria: str, precio: str, indice_escena: int,
+                            ruta_destino: str) -> str:
+    """
+    Genera la imagen de fondo para UNA escena del video, mostrando el
+    texto destacado de esa escena (texto_pantalla) en grande, con un
+    diseño que varía levemente según el tipo de escena (hook/problema/
+    caracteristica/cta) para dar variedad visual entre escenas.
+    """
+    W, H = VIDEO_WIDTH, VIDEO_HEIGHT
+    colores = _paleta_para_categoria(categoria)
+    color_inicio, color_fin = colores
+
+    # Variar la dirección del gradiente y el acento según el índice de
+    # escena, para que consecutivas no se vean idénticas.
+    invertir = indice_escena % 2 == 1
+    c1, c2 = (color_fin, color_inicio) if invertir else (color_inicio, color_fin)
+
+    img = Image.new("RGB", (W, H))
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        ratio = y / H
+        r = int(c1[0] + (c2[0] - c1[0]) * ratio)
+        g = int(c1[1] + (c2[1] - c1[1]) * ratio)
+        b = int(c1[2] + (c2[2] - c1[2]) * ratio)
+        draw.line([(0, y), (W, y)], fill=(r, g, b))
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    if indice_escena % 3 == 0:
+        od.ellipse([W // 2, -150, W + 400, 500], fill=(*c2, 35))
+    elif indice_escena % 3 == 1:
+        od.ellipse([-250, H - 500, 450, H + 250], fill=(*c1, 30))
+    else:
+        od.ellipse([-150, -150, 450, 450], fill=(*c2, 25))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    def load_font(size, bold=True):
+        candidatos = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        ]
+        for path in candidatos:
+            if os.path.exists(path):
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    pass
+        return ImageFont.load_default()
+
+    # Etiqueta pequeña según tipo de escena (da contexto narrativo)
+    ETIQUETAS = {
+        "hook": "👀 ATENCIÓN",
+        "problema": "¿TE PASA ESTO?",
+        "caracteristica": nombre_producto.upper()[:34],
+        "cta": "NO TE LO PIERDAS",
+    }
+    etiqueta = ETIQUETAS.get(tipo_escena, categoria.upper()[:30])
+
+    font_etiq = load_font(34)
+    font_titular = load_font(80)
+
+    draw.rectangle([80, H // 2 - 220, 160, H // 2 - 206], fill=(255, 255, 255))
+    draw.text((80, H // 2 - 170), etiqueta, font=font_etiq, fill=(210, 225, 255))
+
+    # Texto principal de la escena (texto_pantalla), centrado vertical,
+    # ajustado a varias líneas si hace falta
+    palabras = texto_pantalla.upper().split()
+    lineas, linea_actual = [], ""
+    for palabra in palabras:
+        prueba = (linea_actual + " " + palabra).strip()
+        if len(prueba) <= 16:
+            linea_actual = prueba
+        else:
+            if linea_actual:
+                lineas.append(linea_actual)
+            linea_actual = palabra
+    if linea_actual:
+        lineas.append(linea_actual)
+
+    y_texto = H // 2 - 90
+    for linea in lineas[:3]:
+        draw.text((80, y_texto), linea, font=font_titular, fill="white",
+                  stroke_width=4, stroke_fill=(0, 0, 0, 160))
+        y_texto += 95
+
+    # Badge de precio solo en escenas de característica (refuerza recall)
+    if tipo_escena in ("caracteristica", "cta") and precio:
+        precio_texto = f"${precio}" if not str(precio).startswith("$") else precio
+        font_precio = load_font(44)
+        bw, bh = 220, 70
+        bx, by = W - bw - 60, H - bh - 220
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=18,
+                                fill=(255, 255, 255, 235))
+        draw.text((bx + 25, by + 12), precio_texto, font=font_precio, fill=(*c1,))
+
+    img.save(ruta_destino, "JPEG", quality=90)
+    return ruta_destino
+
+
 def obtener_imagen_producto(url_imagen: str, nombre: str, precio: str,
                              categoria: str, indice: int) -> str:
     """
