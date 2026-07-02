@@ -20,7 +20,7 @@ Motor: Gemini (gratis) o Claude (si LLM_PROVIDER="claude" y hay presupuesto)
 
 import json
 import re
-from config import LLM_PROVIDER, GEMINI_API_KEY, GEMINI_MODEL, ANTHROPIC_API_KEY, CLAUDE_MODEL
+from core.llm_router import generar_json
 
 SYSTEM_PROMPT = """Eres un guionista experto en contenido viral de TikTok para
 una tienda propia de productos de domótica, gadgets y tecnología para el hogar,
@@ -95,43 +95,6 @@ Características reales para usar UNA POR ESCENA (en este orden):
 Genera el guion por escenas."""
 
 
-def _limpiar_json(texto: str) -> dict:
-    texto = re.sub(r'```json|```', '', texto).strip()
-    try:
-        return json.loads(texto)
-    except json.JSONDecodeError:
-        match = re.search(r'\{[\s\S]*\}', texto)
-        if match:
-            return json.loads(match.group())
-        raise RuntimeError(f"Respuesta no es JSON válido:\n{texto[:500]}")
-
-
-def _con_gemini(user_msg: str) -> dict:
-    from google import genai
-    from google.genai import types
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_msg,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.8,
-        ),
-    )
-    return _limpiar_json(response.text)
-
-
-def _con_claude(user_msg: str) -> dict:
-    import anthropic
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    response = client.messages.create(
-        model=CLAUDE_MODEL, max_tokens=1400,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    return _limpiar_json(response.content[0].text)
-
-
 def _validar_y_completar(guion: dict) -> dict:
     """Garantiza que haya al menos 7 escenas; si Gemini devolvió menos,
     repite la última característica para no quedar corto de duración."""
@@ -149,11 +112,34 @@ def _validar_y_completar(guion: dict) -> dict:
     return guion
 
 
-def generar_guion(producto: dict) -> dict:
+# Instrucciones cortas por tipo de video (el SEO/Trend Agent rota entre
+# estos formatos para no repetir siempre "review genérico").
+INSTRUCCION_POR_TIPO = {
+    "review": "Formato: reseña directa del producto.",
+    "top5": "Formato: enmarca el producto como parte de un 'ranking' aunque "
+            "solo desarrolles este, ej. 'de los 5 gadgets que probé, este ganó'.",
+    "comparativa": "Formato: compara implícitamente contra la forma 'tradicional' "
+                   "de resolver el problema, sin nombrar marcas de la competencia.",
+    "tutorial": "Formato: tono instructivo, 'así lo configuras/usas paso a paso'.",
+    "como_funciona": "Formato: explica el mecanismo/tecnología detrás del producto "
+                     "de forma simple y curiosa.",
+    "errores_comunes": "Formato: 'el error que cometías antes de tener esto'.",
+    "vale_la_pena": "Formato: honesto, tipo '¿vale la pena o es hype?', con veredicto.",
+    "antes_y_despues": "Formato: contraste explícito de la vida sin vs. con el producto.",
+    "configuracion": "Formato: enfocado en lo fácil/rápido que es de instalar/configurar.",
+    "hack_smart_home": "Formato: 'smart home hack' — un truco de automatización del hogar "
+                       "que este producto habilita.",
+    "lo_compraria_o_no": "Formato: veredicto de compra en primera persona, con pros y contras.",
+}
+
+
+def generar_guion(producto: dict, tipo_video: str = "review") -> dict:
     caracteristicas = producto.get("caracteristicas", []) or []
     # Aseguramos 4 características aunque vengan menos del researcher
     while len(caracteristicas) < 4:
         caracteristicas.append(producto.get("beneficio_clave", "Excelente relación calidad-precio"))
+
+    instruccion_formato = INSTRUCCION_POR_TIPO.get(tipo_video, INSTRUCCION_POR_TIPO["review"])
 
     user_msg = USER_TEMPLATE.format(
         nombre=producto.get("nombre", ""),
@@ -164,15 +150,9 @@ def generar_guion(producto: dict) -> dict:
         por_que_es_buena_compra=producto.get("por_que_es_buena_compra", ""),
         c1=caracteristicas[0], c2=caracteristicas[1],
         c3=caracteristicas[2], c4=caracteristicas[3],
-    )
+    ) + f"\n\n{instruccion_formato}"
 
-    if LLM_PROVIDER == "gemini":
-        guion = _con_gemini(user_msg)
-    elif LLM_PROVIDER == "claude":
-        guion = _con_claude(user_msg)
-    else:
-        raise ValueError(f"LLM_PROVIDER desconocido: {LLM_PROVIDER}")
-
+    guion = generar_json(SYSTEM_PROMPT, user_msg, temperature=0.8)
     return _validar_y_completar(guion)
 
 

@@ -13,11 +13,24 @@ on:
         description: "Cuántas categorías investigar (default: 2)"
         required: false
         default: "2"
+      sin_amazon:
+        description: "Forzar Research Agent (Gemini) en vez de Amazon Agent"
+        required: false
+        default: "false"
 
 jobs:
-  producir-videos:
+  # ────────────────────────────────────────────────────────────────
+  # JOB 1: Investigación (Amazon Agent con Playwright).
+  # Aislado en su propio job con timeout corto porque scraping real
+  # puede colgarse, tardar, o toparse con un captcha de Amazon. Si
+  # este job falla o se cuelga, NO se gasta tiempo de producción de
+  # video (voz/ffmpeg/whisper) para nada.
+  # ────────────────────────────────────────────────────────────────
+  investigar:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
+    outputs:
+      hay_productos: ${{ steps.check.outputs.hay_productos }}
 
     steps:
       - name: Clonar repo
@@ -27,29 +40,104 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: ffmpeg (ya viene en ubuntu-latest)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
-          ffmpeg -version | head -1
-          ffprobe -version | head -1
+          cache: "pip"
 
       - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
-      - name: Correr el agente
+      - name: Instalar Chromium para el Amazon Agent (Playwright)
+        run: playwright install --with-deps chromium
+
+      - name: Investigar productos del día (Fase 1)
+        id: investigar
+        timeout-minutes: 10
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          CATS="${{ github.event.inputs.categorias || '2' }}"
+          FLAGS=""
+          if [ "${{ github.event.inputs.sin_amazon }}" = "true" ]; then
+            FLAGS="--sin-amazon"
+          fi
+          python3 main.py --modo investigar --categorias "$CATS" $FLAGS
+
+      - name: Verificar si hay productos para producir
+        id: check
+        run: |
+          if [ -s output/productos_del_dia.json ] && \
+             [ "$(python3 -c 'import json;print(len(json.load(open("output/productos_del_dia.json"))))')" != "0" ]; then
+            echo "hay_productos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hay_productos=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Subir productos investigados (artifact para el job de producción)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: productos-del-dia
+          path: output/productos_del_dia.json
+          retention-days: 1
+
+      # El Amazon Agent cachea sus búsquedas en state/memory.sqlite
+      # (24h). Lo commiteamos ya en este job para no perder el caché
+      # aunque el job de producción falle después.
+      - name: Commitear caché de Amazon actualizado
+        if: always()
+        run: |
+          git config user.name "tiktok-agent-bot"
+          git config user.email "actions@github.com"
+          git add state/memory.sqlite
+          git diff --cached --quiet && echo "Sin cambios en memoria" || \
+            git commit -m "chore: actualizar caché de Amazon Agent [skip ci]"
+          git push
+
+  # ────────────────────────────────────────────────────────────────
+  # JOB 2: Producción de video. Solo corre si el job de investigación
+  # terminó (haya fallado o no) Y encontró al menos un producto.
+  # ────────────────────────────────────────────────────────────────
+  producir:
+    needs: investigar
+    if: needs.investigar.outputs.hay_productos == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Clonar repo (ya incluye el commit de caché del job anterior)
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: ffmpeg (ya viene en ubuntu-latest)
+        run: ffmpeg -version | head -1
+
+      - name: Instalar dependencias Python
+        run: pip install -r requirements.txt
+
+      - name: Descargar productos investigados
+        uses: actions/download-artifact@v4
+        with:
+          name: productos-del-dia
+          path: output/
+
+      - name: Producir videos (Fase 2)
         env:
           GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          PEXELS_API_KEY:     ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY:    ${{ secrets.PIXABAY_API_KEY }}
         run: |
           LIMITE="${{ github.event.inputs.limite }}"
-          CATS="${{ github.event.inputs.categorias || '2' }}"
           if [ -n "$LIMITE" ]; then
-            python3 main.py --limite $LIMITE --categorias $CATS
+            python3 main.py --modo producir --limite "$LIMITE"
           else
-            python3 main.py --categorias $CATS
+            python3 main.py --modo producir
           fi
 
       - name: Guardar videos como artefactos (por si el envío a Telegram falla)
@@ -59,3 +147,15 @@ jobs:
           name: videos-del-dia-${{ github.run_id }}
           path: output/video_*.mp4
           retention-days: 7
+
+      # Guarda qué se publicó, hashtags usados, y errores de esta fase.
+      - name: Commitear memoria actualizada (Memory Agent)
+        if: always()
+        run: |
+          git config user.name "tiktok-agent-bot"
+          git config user.email "actions@github.com"
+          git pull --rebase
+          git add state/memory.sqlite
+          git diff --cached --quiet && echo "Sin cambios en memoria" || \
+            git commit -m "chore: actualizar memoria del agente [skip ci]"
+          git push

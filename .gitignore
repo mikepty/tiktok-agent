@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+output/*.mp4
+output/*.mp3
+output/*.jpg
+output/*.srt
+output/*.ass
+output/*.json
+output/*_lista.txt
+!output/.gitkeep
+
+# state/memory.sqlite SÍ se commitea a propósito (Memory Agent).
+# No lo ignores.

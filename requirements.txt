@@ -2,3 +2,13 @@ google-genai>=1.0.0
 edge-tts>=6.1.0
 requests>=2.31.0
 pillow>=10.0.0
+
+# Amazon Agent (scraping real)
+playwright>=1.44.0
+
+# Subtitle Agent (timing real palabra por palabra)
+faster-whisper>=1.0.0
+
+# Opcionales según LLM_PROVIDER (descomentar el que uses)
+# anthropic>=0.34.0        # LLM_PROVIDER=claude
+# openai>=1.40.0           # LLM_PROVIDER=openai

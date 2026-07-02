@@ -26,6 +26,38 @@ def _duracion_audio(ruta_audio: str) -> float:
     return float(out)
 
 
+def _clip_desde_broll(ruta_broll: str, duracion: float, ruta_salida: str) -> bool:
+    """
+    Prepara un clip de B-roll REAL (ya viene recortado a 1080x1920 por
+    el Media Agent) para encajar exactamente en la duración de la
+    narración de esa escena: si el clip dura más, lo recorta; si dura
+    menos, lo hace loop hasta cubrir la duración completa.
+    Devuelve True si tuvo éxito (si falla, el llamador debe caer a
+    _clip_con_zoom con una imagen de respaldo).
+    """
+    try:
+        dur_broll = _duracion_audio(ruta_broll)  # ffprobe sirve igual para video
+    except Exception:
+        return False
+
+    cmd = ["ffmpeg", "-y"]
+    if dur_broll < duracion:
+        # loop del clip hasta cubrir la duración de la narración
+        cmd += ["-stream_loop", "-1", "-i", ruta_broll]
+    else:
+        cmd += ["-i", ruta_broll]
+    cmd += [
+        "-t", str(duracion),
+        "-vf", f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT},setsar=1",
+        "-r", "25", "-an", "-pix_fmt", "yuv420p", ruta_salida,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=90)
+        return os.path.exists(ruta_salida) and os.path.getsize(ruta_salida) > 1000
+    except Exception:
+        return False
+
+
 def _clip_con_zoom(imagen: str, duracion: float, ruta_salida: str, zoom_in: bool = True):
     """Genera un clip de video mudo con efecto Ken Burns a partir de una imagen."""
     if zoom_in:
@@ -100,12 +132,25 @@ def construir_video_multiescena(escenas_con_media: list, ruta_salida: str = "out
     print(f"    Duración total calculada: {duracion_total:.1f}s "
           f"({len(escenas_con_media)} escenas)")
 
-    # 1. Clip con Ken Burns por escena
+    # 1. Clip por escena: preferimos B-roll REAL (escena["broll"]) sobre
+    #    la imagen estática con Ken Burns. Si la escena no trae broll o
+    #    el ffmpeg del broll falla, caemos a la imagen generada.
     clips_video = []
+    clips_de_broll = 0
     for idx, (escena, dur) in enumerate(zip(escenas_con_media, duraciones)):
         clip_tmp = f"{ruta_salida}_clip{idx}.mp4"
-        _clip_con_zoom(escena["imagen"], dur, clip_tmp, zoom_in=(idx % 2 == 0))
+        broll = escena.get("broll")
+        ok = False
+        if broll and os.path.exists(broll):
+            ok = _clip_desde_broll(broll, dur, clip_tmp)
+            if ok:
+                clips_de_broll += 1
+        if not ok:
+            _clip_con_zoom(escena["imagen"], dur, clip_tmp, zoom_in=(idx % 2 == 0))
         clips_video.append(clip_tmp)
+
+    print(f"    B-roll real usado en {clips_de_broll}/{len(escenas_con_media)} escenas "
+          f"(resto: tarjetas generadas)")
 
     video_mudo = ruta_salida + "_mudo.mp4"
     _concatenar_clips(clips_video, video_mudo)
@@ -127,21 +172,44 @@ def construir_video_multiescena(escenas_con_media: list, ruta_salida: str = "out
             "-map", "[aout]", audio_final,
         ], check=True, capture_output=True)
 
-    # 4. Subtítulos con timing real por escena
+    # 4a. Primero mezclamos video mudo + audio final SIN subtítulos, para
+    #     poder transcribirlo con el Subtitle Agent (necesita el audio ya
+    #     mezclado con música, que es el que efectivamente se escucha).
+    video_con_audio = ruta_salida + "_con_audio.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-i", video_mudo, "-i", audio_final,
+        "-c:v", "libx264", "-c:a", "aac", "-shortest", video_con_audio,
+    ], check=True, capture_output=True)
+
+    # 4b. Subtítulos: intentamos primero el Subtitle Agent (faster-whisper,
+    #     timing real palabra por palabra, resaltado tipo TikTok). Si no
+    #     está disponible o falla, caemos al .srt aproximado por escena.
     ruta_srt = ruta_salida.replace(".mp4", ".srt")
     _generar_srt_multiescena(escenas_con_media, duraciones, ruta_srt)
 
-    # 5. Render final: video + audio + subtítulos quemados
-    subtitle_filter = (
-        f"subtitles={ruta_srt}:force_style="
-        f"'FontSize=14,FontName=DejaVu Sans Bold,Outline=2,BorderStyle=1,"
-        f"MarginV=60'"
-    )
+    ruta_ass = ruta_salida.replace(".mp4", ".ass")
+    ass_generado = None
+    try:
+        from agents.subtitle_agent import generar_subtitulos_animados
+        ass_generado = generar_subtitulos_animados(audio_final, ruta_ass)
+    except Exception as e:
+        print(f"    ⚠️  Subtitle Agent no disponible ({e}); usando .srt aproximado")
+
+    # 5. Render final: quemamos subtítulos (.ass si se pudo, si no .srt)
+    if ass_generado:
+        subtitle_filter = f"ass={ass_generado}"
+    else:
+        subtitle_filter = (
+            f"subtitles={ruta_srt}:force_style="
+            f"'FontSize=14,FontName=DejaVu Sans Bold,Outline=2,BorderStyle=1,"
+            f"MarginV=60'"
+        )
     subprocess.run([
-        "ffmpeg", "-y", "-i", video_mudo, "-i", audio_final,
+        "ffmpeg", "-y", "-i", video_con_audio,
         "-vf", subtitle_filter,
-        "-c:v", "libx264", "-c:a", "aac", "-shortest", ruta_salida,
+        "-c:v", "libx264", "-c:a", "copy", ruta_salida,
     ], check=True, capture_output=True)
+    os.remove(video_con_audio)
 
     # limpieza
     for c in clips_video:
